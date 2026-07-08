@@ -60,7 +60,21 @@ export function fmtRecordDetail(r: RecallRecord): string {
 }
 
 export function fmtMatchOne(m: MatchResult): string {
-  const lines: string[] = [`## ${VERDICT_LABEL[m.verdict]}`, ''];
+  // 판정이 '추가 정보 필요' 여도 제품명/바코드가 회수 목록에 걸린 경우(m.record 존재)에는,
+  // "정보 부족"처럼 소극적으로 보이지 않도록 "회수 목록에 있음" 경고를 먼저 강하게 띄운다.
+  const onList = m.verdict === 'need_more_info' && !!m.record;
+  const header = onList
+    ? '⚠️ 이 제품명이 회수·판매중지 목록에 있습니다 (로트 확인 필요)'
+    : VERDICT_LABEL[m.verdict];
+
+  const lines: string[] = [`## ${header}`, ''];
+  if (onList) {
+    lines.push(
+      '입력하신 제품명이 현재 회수·판매중지 목록에 올라 있습니다. 다만 회수는 특정 제조일자·유통기한 로트에만 적용되므로, 아래 항목을 추가로 입력하면 지금 가진 물량이 회수 대상 로트인지 확정합니다.',
+      ''
+    );
+  }
+
   lines.push(`**입력 제품** ${m.input.productName}`);
   if (m.input.manufacturer) lines.push(`**입력 제조업체** ${m.input.manufacturer}`);
   if (m.input.manufactureDate) lines.push(`**입력 제조일자** ${m.input.manufactureDate}`);
@@ -82,7 +96,7 @@ export function fmtMatchOne(m: MatchResult): string {
     m.evidence.forEach((e) => lines.push(`- ${e}`));
   }
   if (m.missing.length) {
-    lines.push('', '### 확정에 필요한 추가 입력');
+    lines.push('', onList ? '### 로트 확정에 필요한 추가 입력' : '### 확정에 필요한 추가 입력');
     m.missing.forEach((k) => lines.push(`- ${MISSING_LABEL[k] ?? k}`));
   }
   return lines.join('\n') + DISCLAIMER;
@@ -96,7 +110,7 @@ export function fmtBatch(results: MatchResult[], truncated: boolean): string {
 
   const lines: string[] = ['## 재고·식단 회수 대조 결과', ''];
   lines.push(
-    `총 ${results.length}개 품목 · 해당 **${match.length}** · 추가확인 **${need.length}** · 미해당 ${clear.length}`
+    `총 ${results.length}개 품목 · 해당 **${match.length}** · 로트확인 **${need.length}** · 미해당 ${clear.length}`
   );
   if (truncated) lines.push('', '> 입력 품목이 30개를 초과하여 앞의 30개만 대조했습니다.');
 
@@ -110,10 +124,13 @@ export function fmtBatch(results: MatchResult[], truncated: boolean): string {
     }
   }
   if (need.length) {
-    lines.push('', '### ❓ 추가 확인 필요');
+    // 제품명이 회수 목록에 있으나 로트 특정 정보가 부족한 품목 — "정보 부족"이 아니라 "회수 목록에 있음" 경고로 제시
+    lines.push('', '### ⚠️ 회수 목록에 제품명 있음 — 로트 확인 필요');
     for (const m of need) {
       const want = m.missing.map((k) => MISSING_LABEL[k] ?? k).join(', ');
-      lines.push(`- **${m.input.productName}** — ${want} 입력 필요`);
+      lines.push(
+        `- **${m.input.productName}** — 회수 목록에 동일 제품명이 있습니다. 회수 대상 로트인지 확정하려면 ${want} 입력.`
+      );
     }
   }
   if (clear.length) {
