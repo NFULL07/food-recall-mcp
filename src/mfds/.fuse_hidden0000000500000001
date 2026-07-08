@@ -1,0 +1,133 @@
+/**
+ * 실제 스키마 확정(2026-07-08, 식품안전나라 I0490 샘플 응답 기준).
+ * 각 후보 목록의 맨 앞이 I0490 실제 키이고, 그 뒤는 data.go.kr
+ * (국내 15074318 / 수입 15095378)용 폴백 후보다. 처음 존재하는 값을 취한다.
+ *
+ * I0490 실제 키 매핑:
+ *   PRDTNM=제품명  BSSHNM=업소명  BRCDNO=바코드번호  MNFDT=제조일자
+ *   DISTBTMLMT=유통기한  RTRVLPRVNS=회수사유  RTRVL_GRDCD_NM=회수등급
+ *   RTRVLDSUSE_SEQ=회수판매중지 일련번호  RTRVLPLANDOC_RTRVLMTHD=회수방법
+ *   PRDLST_CD_NM=품목명  PRDLST_TYPE=품목유형  IMG_FILE_PATH=이미지
+ *   CRET_DTM=생성일시  FRMLCUNIT=포장단위
+ */
+
+export type RawRecord = Record<string, unknown>;
+
+/** 값이 비어있음을 뜻하는 플레이스홀더 텍스트(실데이터에 "데이터없음" 등장) */
+const EMPTY_PLACEHOLDERS = new Set(['데이터없음', '정보없음', '해당없음', '없음', '-', 'null', 'N/A']);
+
+const CANDIDATES = {
+  serial: ['RTRVLDSUSE_SEQ', 'RTRVL_SN', 'PRDLST_SN', 'RCALL_SN', '일련번호', 'seq', 'idx'],
+  productName: ['PRDTNM', 'PRDLST_NM', 'PRDUCT_NM', 'PRDT_NM', '제품명'],
+  manufacturer: ['BSSHNM', 'BSSH_NM', 'MUFC_NM', 'CMPNY_NM', '제조업체명', '업체명'],
+  barcode: ['BRCDNO', 'BAR_CD', 'BARCD', 'BRCD_NO', '바코드번호', 'barcode'],
+  manufactureDate: ['MNFDT', 'MANUFACTURE_DT', 'MNFCTUR_DT', 'PRDUCT_DT', '제조일자'],
+  expiryDate: ['DISTBTMLMT', 'DISTB_TMLMT', 'POG_DAYCNT', 'USE_DT', '유통기한'],
+  reason: ['RTRVLPRVNS', 'RTRVL_RESN', 'RCALL_RESN', 'CAUSE', '회수사유'],
+  grade: ['RTRVL_GRDCD_NM', 'RTRVL_GRAD', 'RCALL_GRAD', 'GRADE', '회수등급'],
+  category: ['PRDLST_CD_NM', 'PRDLST_TYPE', 'PRDLST_DCNM', 'PRDT_CLSF', 'FOOD_CLSF', '식품분류'],
+  method: ['RTRVLPLANDOC_RTRVLMTHD', 'RTRVL_MTHD', 'RCALL_MTHD', '회수방법'],
+  photoUrl: ['IMG_FILE_PATH', 'IMG_URL', 'PRDLST_IMG', 'PRDUCT_IMG_URL', '제품사진'],
+  registeredAt: ['CRET_DTM', 'RGSDT', 'REG_DT', '등록일'],
+  packUnit: ['FRMLCUNIT', 'PACK_UNIT', 'PKG_UNIT', '포장단위'],
+} as const;
+
+export type FieldKey = keyof typeof CANDIDATES;
+
+export function pick(raw: RawRecord, key: FieldKey): string | undefined {
+  for (const c of CANDIDATES[key]) {
+    const v = raw[c];
+    if (v !== undefined && v !== null) {
+      const s = String(v).trim();
+      if (s !== '' && !EMPTY_PLACEHOLDERS.has(s)) return s;
+    }
+  }
+  return undefined;
+}
+
+/** 어떤 후보 키가 실제로 쓰였는지 리포트 (probe 보조) */
+export function resolvedKeys(raw: RawRecord): Partial<Record<FieldKey, string>> {
+  const out: Partial<Record<FieldKey, string>> = {};
+  for (const key of Object.keys(CANDIDATES) as FieldKey[]) {
+    for (const c of CANDIDATES[key]) {
+      if (raw[c] !== undefined && raw[c] !== null && String(raw[c]).trim() !== '') {
+        out[key] = c;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// ---------- 날짜 ----------
+
+/**
+ * 문자열에서 YYYYMMDD 정수를 모두 추출.
+ * 실데이터는 형식이 뒤섞여 있다:
+ *   구분자 있음, 두 자리: "2026-06-26", "2026.06.26"
+ *   구분자 있음, 한 자리 월/일: "2028.5.26", "2026-5-19"  (반드시 지원)
+ *   구분자 없는 8자리:        "20260610"
+ * 상대표현("제조일로부터 9개월")은 날짜가 없으므로 빈 배열을 반환한다.
+ */
+function extractYmd(s: string): number[] {
+  const out: number[] = [];
+  const push = (y: string, mo: string, d: string) => {
+    const n = Number(`${y}${mo.padStart(2, '0')}${d.padStart(2, '0')}`);
+    if (n >= 19000101 && n <= 21001231) out.push(n);
+  };
+
+  // 1) 구분자(하이픈 점 슬래시)로 나뉜 형식. 월 일은 1~2자리 허용.
+  const sep = /(\d{4})[-.\/](\d{1,2})[-.\/](\d{1,2})/g;
+  let m: RegExpExecArray | null;
+  while ((m = sep.exec(s)) !== null) push(m[1], m[2], m[3]);
+
+  // 2) 구분자 없는 8자리 토큰(예 20260610). 숫자 이외 문자로 잘라서 확인.
+  for (const tok of s.split(/[^0-9]+/)) {
+    if (tok.length === 8) push(tok.slice(0, 4), tok.slice(4, 6), tok.slice(6, 8));
+  }
+
+  return out;
+}
+
+export interface DateRange {
+  from: number | null;
+  to: number | null;
+  raw: string;
+}
+
+/**
+ * 회수 대상 제조일자는 단일값일 수도, "2025-01-01~2025-01-10" 범위일 수도 있다.
+ * 둘 다 안전하게 처리한다. 파싱 실패 시 from/to 모두 null → 판정 시 추가정보 필요.
+ */
+export function parseDateRange(v: string | undefined): DateRange | null {
+  if (!v) return null;
+  const nums = extractYmd(v);
+  if (nums.length === 0) return { from: null, to: null, raw: v };
+  if (nums.length === 1) return { from: nums[0], to: nums[0], raw: v };
+  return { from: Math.min(...nums), to: Math.max(...nums), raw: v };
+}
+
+/** 사용자 입력 날짜 → YYYYMMDD 정수. 실패 시 null */
+export function parseUserDate(v: string | undefined): number | null {
+  if (!v) return null;
+  const nums = extractYmd(v);
+  return nums.length ? nums[0] : null;
+}
+
+// ---------- 문자열 정규화 ----------
+
+/** 제품명 비교용 정규화: 공백/기호 제거, 소문자화, 전각 정리 */
+export function normName(s: string | undefined): string {
+  if (!s) return '';
+  return s
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s​]/g, '')
+    .replace(/[()\[\]{}<>,.·・~\-_/\\'"`!?*+:;|]/g, '');
+}
+
+/** 바코드 정규화: 숫자만 */
+export function normBarcode(s: string | undefined): string {
+  if (!s) return '';
+  return s.replace(/\D/g, '');
+}
