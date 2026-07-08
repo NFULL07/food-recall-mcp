@@ -54,7 +54,7 @@ export function toRecord(raw: RawRecord, origin: Origin): RecallRecord | null {
     grade: pick(raw, 'grade'),
     category: pick(raw, 'category'),
     method: pick(raw, 'method'),
-    photoUrl: pick(raw, 'photoUrl'),
+    photoUrl: pick(raw, 'photoUrl')?.split(',')[0].trim(),
     registeredAt: pick(raw, 'registeredAt'),
     packUnit: pick(raw, 'packUnit'),
   };
