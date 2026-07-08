@@ -16,3 +16,6 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# FUSE 찌꺼기 파일
+.fuse_hidden*
