@@ -14,6 +14,9 @@ interface Snapshot {
 let snapshot: Snapshot | null = null;
 let loading: Promise<void> | null = null;
 
+/** 데이터 적재 전에는 이 간격으로 자주 재시도하고, 적재되면 정상 주기로 전환한다. */
+const FAST_RETRY_MS = 30_000;
+
 async function fetchAll(src: SourceConfig): Promise<any[]> {
   const rows: any[] = [];
   let start = 1;
@@ -89,8 +92,7 @@ export async function refresh(): Promise<void> {
     .filter(Boolean);
 
   if (!ok.length) {
-    // 전체 소스 실패. 이전 정상 스냅샷이 있으면 그대로 유지하고(빈 데이터로 덮지 않음),
-    // 최초 기동이라 스냅샷이 없을 때만 오류를 던진다.
+    // 전체 소스 실패. 이전 정상 스냅샷이 있으면 유지(빈 데이터로 덮지 않음), 없으면 오류를 던진다.
     if (snapshot) {
       console.warn('[cache] 전체 소스 적재 실패 → 이전 스냅샷 유지:', failed.join(' / '));
       return;
@@ -121,26 +123,42 @@ export function isReady(): boolean {
   return snapshot !== null && snapshot.records.length > 0;
 }
 
+/**
+ * 서버 기동을 막지 않는다. 최초 적재를 1회 시도하되(성공하면 데이터와 함께 뜬다),
+ * 실패해도 서버는 뜨고 백그라운드로 계속 재시도한다. 데이터가 없을 때는 자주(30초),
+ * 데이터가 있으면 정상 주기로 재시도한다. → 정부 API 순간 장애 시 재배포 없이 자가 회복.
+ */
 export async function start(): Promise<void> {
   if (loading) return loading;
   loading = (async () => {
-    // 최초 적재: 정부 API 순간 장애에 대비해 몇 차례 재시도한다.
-    const MAX_TRIES = 6;
-    for (let i = 1; ; i++) {
-      try {
-        await refresh();
-        break;
-      } catch (e: any) {
-        if (i >= MAX_TRIES) throw e;
-        console.error(
-          `[cache] 최초 적재 실패 (시도 ${i}/${MAX_TRIES}), 10초 후 재시도: ${e.message}`
-        );
-        await new Promise((r) => setTimeout(r, 10000));
-      }
+    try {
+      await refresh();
+    } catch (e: any) {
+      console.error('[cache] 최초 적재 실패 → 서버는 기동하고 백그라운드 재시도:', e.message);
     }
-    setInterval(() => {
-      refresh().catch((e) => console.error('[cache] 갱신 실패, 이전 스냅샷 유지:', e.message));
-    }, REFRESH_INTERVAL_MS);
+    scheduleNext();
   })();
   return loading;
+}
+
+function scheduleNext(): void {
+  const delay = isReady() ? REFRESH_INTERVAL_MS : FAST_RETRY_MS;
+  setTimeout(async () => {
+    try {
+      await refresh();
+    } catch (e: any) {
+      console.error('[cache] 갱신 실패, 이전 스냅샷 유지:', e.message);
+    }
+    scheduleNext();
+  }, delay);
+}
+
+/** health 응답용 상태. 예외를 던지지 않는다. 데이터가 없어도 서버는 살아있음을 알린다. */
+export function stats() {
+  return {
+    ready: isReady(),
+    records: snapshot ? snapshot.records.length : 0,
+    sources: snapshot ? snapshot.sources : [],
+    loadedAt: snapshot ? snapshot.loadedAt.toISOString() : null,
+  };
 }
