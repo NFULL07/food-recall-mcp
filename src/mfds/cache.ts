@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { activeSources, REFRESH_INTERVAL_MS, SourceConfig } from './config.js';
-import { RecallRecord, toRecord } from './types.js';
+import { Origin, RecallRecord, toRecord } from './types.js';
 import { buildIndex } from './match.js';
 
 interface Snapshot {
@@ -48,11 +51,11 @@ async function fetchAll(src: SourceConfig): Promise<any[]> {
   return rows;
 }
 
-function buildSnapshot(all: Array<{ src: SourceConfig; rows: any[] }>): Snapshot {
+function buildSnapshot(all: Array<{ name: string; origin: Origin; rows: any[] }>): Snapshot {
   const records: RecallRecord[] = [];
-  for (const { src, rows } of all) {
+  for (const { origin, rows } of all) {
     for (const raw of rows) {
-      const rec = toRecord(raw, src.origin);
+      const rec = toRecord(raw, origin);
       if (rec) records.push(rec);
     }
   }
@@ -73,7 +76,7 @@ function buildSnapshot(all: Array<{ src: SourceConfig; rows: any[] }>): Snapshot
     byManufacturer,
     bySerial,
     loadedAt: new Date(),
-    sources: all.map((a) => a.src.name),
+    sources: all.map((a) => a.name),
   };
 }
 
@@ -86,13 +89,14 @@ export async function refresh(): Promise<void> {
     sources.map(async (src) => ({ src, rows: await fetchAll(src) }))
   );
 
-  const ok = results.filter((r) => r.status === 'fulfilled').map((r) => (r as any).value);
+  const ok = results
+    .filter((r) => r.status === 'fulfilled')
+    .map((r) => (r as any).value as { src: SourceConfig; rows: any[] });
   const failed = results
     .map((r, i) => (r.status === 'rejected' ? `${sources[i].name}: ${(r as any).reason}` : null))
     .filter(Boolean);
 
   if (!ok.length) {
-    // 전체 소스 실패. 이전 정상 스냅샷이 있으면 유지(빈 데이터로 덮지 않음), 없으면 오류를 던진다.
     if (snapshot) {
       console.warn('[cache] 전체 소스 적재 실패 → 이전 스냅샷 유지:', failed.join(' / '));
       return;
@@ -101,8 +105,7 @@ export async function refresh(): Promise<void> {
   }
   if (failed.length) console.warn('[cache] 일부 소스 실패:', failed.join(' / '));
 
-  const next = buildSnapshot(ok);
-  // 방어: 이전에 데이터가 있었는데 이번에 0건이면(순간 장애 가능성) 이전 것을 유지한다.
+  const next = buildSnapshot(ok.map((o) => ({ name: o.src.name, origin: o.src.origin, rows: o.rows })));
   if (!next.records.length && snapshot && snapshot.records.length) {
     console.warn('[cache] 이번 적재가 0건 → 이전 스냅샷 유지');
     return;
@@ -111,6 +114,34 @@ export async function refresh(): Promise<void> {
   console.log(
     `[cache] ${snapshot.records.length}건 적재 (${snapshot.sources.join(', ')}) @ ${snapshot.loadedAt.toISOString()}`
   );
+}
+
+/**
+ * seed 폴백: 저장소에 동봉된 data/seed.json 을 읽어 최소한의 데이터를 확보한다.
+ * API가 죽은 상태에서 서버를 새로 배포해도 빈 화면 대신 최근 데이터를 보여준다.
+ * 실데이터(refresh)가 성공하면 즉시 덮어써지므로 오래된 정보가 남지 않는다.
+ * 파일이 없거나 비어 있으면 조용히 넘어간다.
+ */
+function loadSeed(): boolean {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, '../../data/seed.json'), // dist/mfds -> 프로젝트 루트/data
+    resolve(process.cwd(), 'data/seed.json'),
+  ];
+  for (const p of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(p, 'utf8'));
+      const rows: any[] = parsed?.rows ?? [];
+      const origin: Origin = parsed?.origin === 'imported' ? 'imported' : 'domestic';
+      if (!rows.length) continue;
+      snapshot = buildSnapshot([{ name: `seed(${parsed?.capturedAt ?? 'unknown'})`, origin, rows }]);
+      console.log(`[cache] seed ${snapshot.records.length}건 로드 (fallback, ${p})`);
+      return true;
+    } catch {
+      /* 다음 후보 */
+    }
+  }
+  return false;
 }
 
 /** 도구 호출 경로에서는 절대 외부 API를 부르지 않는다. 메모리만 읽는다. */
@@ -124,9 +155,8 @@ export function isReady(): boolean {
 }
 
 /**
- * 서버 기동을 막지 않는다. 최초 적재를 1회 시도하되(성공하면 데이터와 함께 뜬다),
- * 실패해도 서버는 뜨고 백그라운드로 계속 재시도한다. 데이터가 없을 때는 자주(30초),
- * 데이터가 있으면 정상 주기로 재시도한다. → 정부 API 순간 장애 시 재배포 없이 자가 회복.
+ * 서버 기동을 막지 않는다. 최초 적재를 1회 시도하되, 실패하면 seed 폴백을 시도하고,
+ * 그래도 없으면 빈 상태로 뜬다. 이후 백그라운드로 계속 재시도해 API 복구 시 자동 회복한다.
  */
 export async function start(): Promise<void> {
   if (loading) return loading;
@@ -134,7 +164,12 @@ export async function start(): Promise<void> {
     try {
       await refresh();
     } catch (e: any) {
-      console.error('[cache] 최초 적재 실패 → 서버는 기동하고 백그라운드 재시도:', e.message);
+      console.error('[cache] 최초 적재 실패:', e.message);
+      if (loadSeed()) {
+        console.log('[cache] seed 폴백으로 기동. 백그라운드에서 실데이터 재시도.');
+      } else {
+        console.error('[cache] seed 없음 → 데이터 없이 기동, 백그라운드 재시도.');
+      }
     }
     scheduleNext();
   })();
@@ -153,7 +188,7 @@ function scheduleNext(): void {
   }, delay);
 }
 
-/** health 응답용 상태. 예외를 던지지 않는다. 데이터가 없어도 서버는 살아있음을 알린다. */
+/** health 응답용 상태. 예외를 던지지 않는다. */
 export function stats() {
   return {
     ready: isReady(),

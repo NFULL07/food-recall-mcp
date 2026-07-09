@@ -109,6 +109,6 @@ export function activeSources(): SourceConfig[] {
 }
 
 export const REFRESH_INTERVAL_MS =
-  Number(process.env.REFRESH_INTERVAL_MIN ?? 180) * 60 * 1000;
+  Number(process.env.REFRESH_INTERVAL_MIN ?? 60) * 60 * 1000;
 export const PORT = Number(process.env.PORT ?? 8080);
 export const MAX_RESPONSE_CHARS = 20000; // 24k 제한에 대한 안전 마진

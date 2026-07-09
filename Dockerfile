@@ -16,6 +16,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 # 빌드 결과만 복사 (.env 는 이미지에 넣지 않는다 - 플랫폼 환경변수로 주입)
 COPY --from=build /app/dist ./dist
+COPY data ./data
 EXPOSE 8080
 # FOODSAFETYKOREA_API_KEY 는 카카오 클라우드 환경변수로 설정할 것
 CMD ["node", "dist/server.js"]

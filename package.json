@@ -9,9 +9,12 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "probe": "node scripts/probe.mjs",
-    "test:match": "tsx scripts/test-match.ts"
+    "test:match": "tsx scripts/test-match.ts",
+    "seed": "node scripts/make-seed.mjs"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "express": "^5.1.0",
