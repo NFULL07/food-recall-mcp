@@ -6,7 +6,7 @@ import { text, fmtBatch, fmtMatchOne, fmtRecordBrief, fmtRecordDetail, DISCLAIME
 import { normName, normBarcode, parseUserDate } from './mfds/fields.js';
 import { lookupGrade, GRADE_SOURCE } from './mfds/grades.js';
 
-const SVC = 'SikjajaeRecallCheck(식자재회수점검)';
+const SVC = '식자재 회수점검 (SikjajaeRecallCheck)';
 const SAFETY =
   'This tool only compares input against the official MFDS recall list and does not make a safety judgment; final confirmation must follow Food Safety Korea or the retailer/manufacturer notice.';
 
