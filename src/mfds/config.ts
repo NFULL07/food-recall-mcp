@@ -9,6 +9,12 @@ export interface SourceConfig {
   extractRows: (json: any) => any[];
   /** 응답 JSON에서 전체 건수를 꺼내는 함수 (없으면 null) */
   extractTotal: (json: any) => number | null;
+  /**
+   * 응답이 API 오류인지 검사. 오류 메시지를 반환하면 해당 적재를 "실패"로 처리한다.
+   * (예: 식품안전나라가 200 응답에 ERROR-500 "서버오류"를 담아 0건으로 내려주는 경우,
+   *  이를 정상 0건으로 오인해 캐시를 비우는 것을 막는다.)
+   */
+  checkError?: (json: any) => string | null;
   pageSize: number;
 }
 
@@ -30,6 +36,14 @@ export const FOODSAFETY_I0490: SourceConfig = {
   extractTotal: (j) => {
     const n = Number(j?.I0490?.total_count);
     return Number.isFinite(n) ? n : null;
+  },
+  checkError: (j) => {
+    // INFO-000 정상, INFO-200 데이터없음(정상). 그 외(ERROR-xxx 등)는 오류로 처리.
+    const code = j?.I0490?.RESULT?.CODE;
+    if (code && code !== 'INFO-000' && code !== 'INFO-200') {
+      return `${code} ${j?.I0490?.RESULT?.MSG ?? ''}`.trim();
+    }
+    return null;
   },
 };
 
@@ -71,6 +85,15 @@ function dataGoKrSource(
     extractTotal: (j) => {
       const n = Number(j?.response?.body?.totalCount ?? j?.body?.totalCount);
       return Number.isFinite(n) ? n : null;
+    },
+    checkError: (j) => {
+      // data.go.kr 정상 코드는 보통 '00'. 그 외는 오류로 처리.
+      const header = j?.response?.header ?? j?.header;
+      const code = header?.resultCode;
+      if (code && code !== '00' && code !== '0') {
+        return `${code} ${header?.resultMsg ?? ''}`.trim();
+      }
+      return null;
     },
   };
 }

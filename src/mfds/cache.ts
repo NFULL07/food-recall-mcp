@@ -27,6 +27,12 @@ async function fetchAll(src: SourceConfig): Promise<any[]> {
     if (!res.ok) throw new Error(`${src.name} HTTP ${res.status}`);
     const json = await res.json();
 
+    // API 오류(예: 식품안전나라 ERROR-500 "서버오류")를 정상 0건으로 오인하지 않는다.
+    if (src.checkError) {
+      const err = src.checkError(json);
+      if (err) throw new Error(`${src.name} API 오류: ${err}`);
+    }
+
     if (total === null) total = src.extractTotal(json);
     const chunk = src.extractRows(json);
     if (!chunk.length) break;
@@ -82,10 +88,24 @@ export async function refresh(): Promise<void> {
     .map((r, i) => (r.status === 'rejected' ? `${sources[i].name}: ${(r as any).reason}` : null))
     .filter(Boolean);
 
-  if (!ok.length) throw new Error(`전체 소스 적재 실패\n${failed.join('\n')}`);
+  if (!ok.length) {
+    // 전체 소스 실패. 이전 정상 스냅샷이 있으면 그대로 유지하고(빈 데이터로 덮지 않음),
+    // 최초 기동이라 스냅샷이 없을 때만 오류를 던진다.
+    if (snapshot) {
+      console.warn('[cache] 전체 소스 적재 실패 → 이전 스냅샷 유지:', failed.join(' / '));
+      return;
+    }
+    throw new Error(`전체 소스 적재 실패\n${failed.join('\n')}`);
+  }
   if (failed.length) console.warn('[cache] 일부 소스 실패:', failed.join(' / '));
 
-  snapshot = buildSnapshot(ok);
+  const next = buildSnapshot(ok);
+  // 방어: 이전에 데이터가 있었는데 이번에 0건이면(순간 장애 가능성) 이전 것을 유지한다.
+  if (!next.records.length && snapshot && snapshot.records.length) {
+    console.warn('[cache] 이번 적재가 0건 → 이전 스냅샷 유지');
+    return;
+  }
+  snapshot = next;
   console.log(
     `[cache] ${snapshot.records.length}건 적재 (${snapshot.sources.join(', ')}) @ ${snapshot.loadedAt.toISOString()}`
   );
@@ -98,13 +118,26 @@ export function getSnapshot(): Snapshot {
 }
 
 export function isReady(): boolean {
-  return snapshot !== null;
+  return snapshot !== null && snapshot.records.length > 0;
 }
 
 export async function start(): Promise<void> {
   if (loading) return loading;
   loading = (async () => {
-    await refresh();
+    // 최초 적재: 정부 API 순간 장애에 대비해 몇 차례 재시도한다.
+    const MAX_TRIES = 6;
+    for (let i = 1; ; i++) {
+      try {
+        await refresh();
+        break;
+      } catch (e: any) {
+        if (i >= MAX_TRIES) throw e;
+        console.error(
+          `[cache] 최초 적재 실패 (시도 ${i}/${MAX_TRIES}), 10초 후 재시도: ${e.message}`
+        );
+        await new Promise((r) => setTimeout(r, 10000));
+      }
+    }
     setInterval(() => {
       refresh().catch((e) => console.error('[cache] 갱신 실패, 이전 스냅샷 유지:', e.message));
     }, REFRESH_INTERVAL_MS);
